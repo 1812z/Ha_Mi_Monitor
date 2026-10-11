@@ -15,7 +15,7 @@ from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .adb_client import AdbClient
+from .adb_client import AdbClient, resolve_adb_key
 from .const import DOMAIN, PLATFORMS
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,7 +26,9 @@ SCAN_INTERVAL = timedelta(seconds=30)
 class MiMonitorCoordinator(DataUpdateCoordinator[dict[str, object]]):
     """单台显示器的状态协调器：定期回读全部受控参数。"""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, key_path: str | None = None
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -34,7 +36,7 @@ class MiMonitorCoordinator(DataUpdateCoordinator[dict[str, object]]):
             update_interval=SCAN_INTERVAL,
         )
         host = str(entry.data.get(CONF_HOST) or "")
-        self.client = AdbClient(host)
+        self.client = AdbClient(host, key_path=key_path)
         self.connected = False
         self.model: str | None = None
         self._attr_device_info = {
@@ -42,7 +44,7 @@ class MiMonitorCoordinator(DataUpdateCoordinator[dict[str, object]]):
             "name": f"Mi Monitor {host}",
             "manufacturer": "Xiaomi / Redmi",
             "model": "Mi Monitor (ADB)",
-            "sw_version": "1.0.0",
+            "sw_version": "1.1.0",
         }
 
     @property
@@ -88,7 +90,9 @@ class MiMonitorCoordinator(DataUpdateCoordinator[dict[str, object]]):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """设置一个配置条目（一台显示器）。"""
-    coordinator = MiMonitorCoordinator(hass, entry)
+    # 密钥解析/生成是阻塞操作（RSA 生成），放 executor
+    key_path = await hass.async_add_executor_job(resolve_adb_key, hass)
+    coordinator = MiMonitorCoordinator(hass, entry, key_path=key_path)
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 

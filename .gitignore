@@ -1,2 +1,13 @@
 /tests/__pycache__
 /custom_components/mi_monitor/__pycache__
+__pycache__/
+*.pyc
+
+# 本地测试用的临时依赖目录（不是集成的一部分）
+/.pylibs/
+/keys/
+
+# 测试产生的临时密钥
+/tests/fake_adbkey
+/tests/fake_adbkey.pub
+/tests/_keytest/

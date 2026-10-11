@@ -7,7 +7,7 @@
   "documentation": "https://github.com/Ha_Mi_Monitor",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Ha_Mi_Monitor/issues",
-  "requirements": [],
-  "version": "1.0.0",
+  "requirements": ["adb-shell>=0.4.4"],
+  "version": "1.1.0",
   "integration_type": "device"
 }

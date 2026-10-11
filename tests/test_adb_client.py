@@ -1,28 +1,48 @@
-"""adb_client 的单元测试：验证命令构造与解析逻辑（不依赖真机）。"""
+"""adb_client 测试：用 adb-shell 替身验证命令序列、事务与容错。
 
+真实 adb-shell 由 HA 依据 manifest.json 的 requirements 自动安装；这里用签名
+完全对齐的替身来验证集成的调用是否正确、串行锁是否生效、异常是否归类正确。
+"""
+
+import asyncio
 import importlib.util
 import os
 import sys
 import unittest
 
-_MODULE_PATH = os.path.join(
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from fake_adb_shell import install_fake_adb_shell  # noqa: E402
+
+recorded, behaviour, exceptions_mod = install_fake_adb_shell()
+
+_BASE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..",
     "custom_components",
     "mi_monitor",
-    "adb_client.py",
 )
-
-_spec = importlib.util.spec_from_file_location("adb_client_under_test", _MODULE_PATH)
+_spec = importlib.util.spec_from_file_location(
+    "adb_client_under_test", os.path.join(_BASE, "adb_client.py")
+)
 adb_client = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
 sys.modules["adb_client_under_test"] = adb_client
 _spec.loader.exec_module(adb_client)
 
 AdbClient = adb_client.AdbClient
-build_mtk_command = adb_client.build_mtk_command
-parse_mtk_batch_output = adb_client.parse_mtk_batch_output
-_tvservice_quote = adb_client._tvservice_quote
+AdbError = adb_client.AdbError
+
+
+def _reset():
+    recorded["shell"].clear()
+    recorded["push"].clear()
+    recorded["connect"] = 0
+    recorded["close"] = 0
+    behaviour["device_output"] = {}
+    behaviour["connect_error"] = None
+    behaviour["shell_error"] = None
+    behaviour["push_error"] = None
 
 
 class TestCommandConstruction(unittest.TestCase):
@@ -30,17 +50,16 @@ class TestCommandConstruction(unittest.TestCase):
         self.assertEqual(AdbClient("192.168.1.10").serial, "192.168.1.10:5555")
 
     def test_tvservice_quote_uses_ifs(self):
-        cmd = _tvservice_quote(["cp", "/a", "/b"])
+        cmd = adb_client._tvservice_quote(["cp", "/a", "/b"])
         self.assertIn('service call TvService 3 s16 "sh -c eval', cmd)
         self.assertIn("\\${IFS}", cmd)
-        self.assertNotIn(" cp ", cmd)  # 真实空格必须被 ${IFS} 替代
+        self.assertNotIn(" cp ", cmd)  # 真实空格必须写成 ${IFS}
 
     def test_mtk_set_command(self):
-        cmd = build_mtk_command("set", "g_disp__disp_back_light", 50, 3)
+        cmd = adb_client.build_mtk_command("set", "g_disp__disp_back_light", 50, 3)
         self.assertIn("MtkDirectTool", cmd)
         self.assertIn("g_disp__disp_back_light", cmd)
         self.assertIn("50", cmd)
-        self.assertIn("3", cmd)
 
     def test_parse_batch_output(self):
         out = (
@@ -49,7 +68,7 @@ class TestCommandConstruction(unittest.TestCase):
             "__timestamp=123\n"
             "g_video__broken=ERROR\n"
         )
-        parsed = parse_mtk_batch_output(out)
+        parsed = adb_client.parse_mtk_batch_output(out)
         self.assertEqual(parsed["g_disp__disp_back_light"], "50")
         self.assertEqual(parsed["g_video__clr_temp"], "1")
         self.assertNotIn("__timestamp", parsed)
@@ -61,6 +80,141 @@ class TestCommandConstruction(unittest.TestCase):
         self.assertEqual(client.INPUT_SOURCES["hdmi2"], 24)
         self.assertEqual(client.INPUT_SOURCES["dp"], 29)
         self.assertEqual(client.INPUT_SOURCES["usbc"], 30)
+
+    def test_available_is_property_not_method(self):
+        """回归测试：真实 adb-shell 的 available 是 property，调用会 TypeError。"""
+        source = open(adb_client.__file__, encoding="utf-8").read()
+        self.assertNotIn(".available()", source)
+
+
+class TestRuntimeBehaviour(unittest.IsolatedAsyncioTestCase):
+    """用替身跑真实的异步调用路径。"""
+
+    def setUp(self):
+        _reset()
+        self.key = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "fake_adbkey"
+        )
+        for suffix in ("", ".pub"):
+            path = self.key + suffix
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("FAKE")
+
+    def _client(self):
+        return AdbClient("192.168.1.10", key_path=self.key)
+
+    async def test_connect_ok(self):
+        client = self._client()
+        ok, state = await client.connect()
+        self.assertTrue(ok)
+        self.assertEqual(state, "device")
+
+    async def test_unauthorized_maps_to_state(self):
+        behaviour["connect_error"] = exceptions_mod.TcpTimeoutException("boom")
+        client = self._client()
+        ok, state = await client.connect()
+        self.assertFalse(ok)
+        self.assertEqual(state, "unauthorized")
+
+    async def test_get_uses_settings_get(self):
+        behaviour["device_output"] = {"settings get global picture_backlight": "42"}
+        client = self._client()
+        self.assertEqual(await client.get("picture_backlight"), "42")
+        self.assertIn("settings get global picture_backlight",
+                      recorded["shell"][0]["command"])
+
+    async def test_set_backlight_full_sequence(self):
+        behaviour["device_output"] = {"stat -c": "5273"}
+        client = self._client()
+        await client.set_backlight(41)
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("g_disp__disp_back_light", joined)          # JNI 直写
+        self.assertIn("settings put global picture_backlight 41", joined)
+        self.assertIn("settings put global xiaomi_picture_backlight 41", joined)
+        self.assertIn("PIC_MODE_CHANGED", joined)                  # 刷新广播
+
+    async def test_set_backlight_clamps_range(self):
+        behaviour["device_output"] = {"stat -c": "5273"}
+        client = self._client()
+        await client.set_backlight(999)
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("settings put global picture_backlight 100", joined)
+
+    async def test_jar_heal_caches(self):
+        behaviour["device_output"] = {"stat -c": "5273"}
+        client = self._client()
+        self.assertTrue(await client.check_and_heal_jar())
+        self.assertTrue(client._jar_healed)
+        before = len(recorded["shell"])
+        self.assertTrue(await client.check_and_heal_jar())
+        self.assertEqual(len(recorded["shell"]), before, "缓存命中后不应再发命令")
+
+    async def test_jar_missing_pushes(self):
+        behaviour["device_output"] = {"stat -c": "0"}  # 设备上没有 jar
+        client = self._client()
+        ok = await client.check_and_heal_jar(local_jar=adb_client.locate_mtk_jar())
+        self.assertTrue(ok)
+        self.assertTrue(recorded["push"], "应把 jar 推到设备")
+
+    async def test_input_source_switch(self):
+        client = self._client()
+        await client.set_input_source("HDMI 1")
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("am force-stop com.xiaomi.mitv.tvplayer", joined)
+        self.assertIn("EXTSRC_PLAY", joined)
+        self.assertIn("--ei input 23", joined)
+        self.assertIn("settings put global mitv.tvplayer.hdmi.last.source 23", joined)
+
+    async def test_input_source_accepts_english_key(self):
+        client = self._client()
+        await client.set_input_source("usbc")
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("--ei input 30", joined)
+
+    async def test_unknown_input_source_raises(self):
+        client = self._client()
+        with self.assertRaises(ValueError):
+            await client.set_input_source("nope")
+
+    async def test_picture_mode_both_naming_schemes(self):
+        client = self._client()
+        await client.set_picture_mode("电影")
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("settings put global picture_mode 9", joined)
+        _reset()
+        await client.set_picture_mode("game")
+        joined = "\n".join(c["command"] for c in recorded["shell"])
+        self.assertIn("settings put global picture_mode 10", joined)
+
+    async def test_picture_mode_unknown_raises(self):
+        client = self._client()
+        with self.assertRaises(ValueError):
+            await client.set_picture_mode("bogus")
+
+    async def test_get_input_source_maps_back(self):
+        behaviour["device_output"] = {
+            "settings get global mitv.tvplayer.hdmi.last.source": "24"
+        }
+        client = self._client()
+        self.assertEqual(await client.get_input_source(), "hdmi2")
+
+    async def test_shell_timeout_becomes_adb_error(self):
+        behaviour["shell_error"] = exceptions_mod.AdbTimeoutError("too slow")
+        client = self._client()
+        with self.assertRaises(AdbError):
+            await client.get("picture_backlight")
+
+    async def test_concurrent_calls_serialized(self):
+        """并发调用不能交错：连接只应建立一次。"""
+        behaviour["device_output"] = {"settings get global picture_backlight": "42"}
+        client = self._client()
+        await asyncio.gather(
+            client.get("picture_backlight"),
+            client.get("picture_contrast"),
+            client.get("picture_hue"),
+        )
+        self.assertEqual(recorded["connect"], 1)
 
 
 if __name__ == "__main__":

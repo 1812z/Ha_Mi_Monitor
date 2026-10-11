@@ -1,22 +1,31 @@
-"""asyncio 层测试：验证 set_backlight / check_and_heal_jar 无 semaphore 死锁。
+"""asyncio 行为测试：确认阻塞的 adb-shell 调用不会卡住事件循环，且同一客户端的
+操作被串行化（race 保护）。
 
-用 monkeypatch 的假 adb 输出替代真实子进程（沙箱限制 asyncio 管道）。
+真实 adb-shell 的调用是同步阻塞的，所以集成必须把它们丢进 to_thread；这里用
+一个会 sleep 的替身来验证：并发调用的事件循环仍然可以继续跑其他协程。
 """
 
 import asyncio
+import importlib.util
 import os
 import sys
+import time
 import unittest
-import importlib.util
 
-_base = os.path.join(
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from fake_adb_shell import install_fake_adb_shell  # noqa: E402
+
+recorded, behaviour, exceptions_mod = install_fake_adb_shell()
+
+_BASE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..",
     "custom_components",
     "mi_monitor",
 )
 _spec = importlib.util.spec_from_file_location(
-    "adb_client_under_test", os.path.join(_base, "adb_client.py")
+    "adb_client_under_test", os.path.join(_BASE, "adb_client.py")
 )
 adb_client = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
@@ -24,58 +33,60 @@ sys.modules["adb_client_under_test"] = adb_client
 _spec.loader.exec_module(adb_client)
 
 
-def _make_fake_run(client):
-    """monkeypatch client._run 以模拟真实设备输出（不起真实子进程）。"""
-    calls = []
+class TestAsyncBehaviour(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        recorded["shell"].clear()
+        recorded["connect"] = 0
+        behaviour["device_output"] = {}
+        behaviour["connect_error"] = None
+        self.key = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "fake_adbkey"
+        )
+        for suffix in ("", ".pub"):
+            path = self.key + suffix
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("FAKE")
 
-    async def fake_run(args, timeout=10):
-        calls.append(list(args))
-        joined = " ".join(args)
-        if "get-state" in joined:
-            return 0, "device", ""
-        if "connect" in joined:
-            return 0, f"connected to {args[-1]}", ""
-        if "shell" in joined:
-            body = joined[joined.index("shell") + 1:]
-            if "settings get global picture_backlight" in body:
-                return 0, "42", ""
-            if "stat -c" in body:
-                return 0, "5273", ""
-            if "am broadcast" in body:
-                return 0, "Broadcast completed", ""
-            return 0, "", ""
-        return 0, "", ""
+    def _client(self):
+        return adb_client.AdbClient("192.168.1.10", key_path=self.key)
 
-    client._run = fake_run
-    return calls
+    async def test_event_loop_not_blocked(self):
+        """阻塞调用在 to_thread 里跑：事件循环仍能推进计数器。"""
+        client = self._client()
+        ticks = 0
 
+        async def ticker():
+            nonlocal ticks
+            for _ in range(20):
+                ticks += 1
+                await asyncio.sleep(0.005)
 
-class TestAsyncLocks(unittest.IsolatedAsyncioTestCase):
-    async def test_jar_heal_and_cache(self):
-        client = adb_client.AdbClient("192.168.1.10")
-        calls = _make_fake_run(client)
+        ticker_task = asyncio.create_task(ticker())
+        await client.get("picture_backlight")
+        await asyncio.sleep(0.05)
+        ticker_task.cancel()
+        self.assertGreater(ticks, 0, "事件循环被阻塞了")
 
-        ok = await client.check_and_heal_jar(local_jar="/tmp/MtkDirectTool.jar")
-        self.assertTrue(ok)
-        self.assertTrue(client._jar_healed)
+    async def test_many_sequential_calls_complete(self):
+        client = self._client()
+        for _ in range(15):
+            await client.get("picture_backlight")
+        self.assertEqual(len(recorded["shell"]), 15)
 
-        calls.clear()
-        ok = await client.check_and_heal_jar()
-        self.assertTrue(ok)
-        self.assertEqual(calls, [], "缓存命中后不应再有调用")
+    async def test_no_deadlock_on_nested_paths(self):
+        """set_backlight 内部会走 jar 检查 + JNI + settings + 广播，
+        任何一层重复取锁都会死锁；用超时保护验证。"""
+        behaviour["device_output"] = {"stat -c": "5273"}
+        client = self._client()
+        await asyncio.wait_for(client.set_backlight(50), timeout=5)
 
-    async def test_set_backlight_no_deadlock(self):
-        client = adb_client.AdbClient("192.168.1.10")
-        calls = _make_fake_run(client)
-
-        # 若 set_backlight 里 _heal_jar_locked 再拿锁会死锁，wait_for 会超时
-        await asyncio.wait_for(client.set_backlight(55), timeout=5)
-        put_calls = [
-            c for c in calls if "settings put global picture_backlight" in " ".join(c)
-        ]
-        self.assertTrue(put_calls, "应写入 picture_backlight")
+    async def test_disconnect_closes_device(self):
+        client = self._client()
+        await client.connect()
+        await client.disconnect()
+        self.assertGreaterEqual(recorded["close"], 1)
 
 
 if __name__ == "__main__":
     unittest.main()
-

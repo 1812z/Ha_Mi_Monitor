@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "小米显示器（ADB）",
-        "description": "输入显示器的 IP 地址。显示器需已开启无线 ADB（端口 5555）。可以添加多台显示器。",
+        "description": "输入显示器的 IP 地址（无线 ADB 端口默认 5555）。可以添加多台显示器，一台一个 IP。\n\n首次连接需要在显示器上确认「允许调试」授权。",
         "data": {
           "host": "显示器 IP 地址"
         }
@@ -18,9 +18,10 @@
     },
     "error": {
       "no_host": "请输入 IP 地址",
-      "invalid_ip": "IP 地址格式不正确",
-      "cannot_connect": "无法连接到显示器，请确认无线 ADB 已开启、IP 正确且与显示器在同一网络",
-      "unauthorized": "ADB 连接未授权，请在显示器上确认授权弹窗"
+      "invalid_ip": "IP 地址格式不正确（应为 192.168.x.x 形式）",
+      "cannot_connect": "无法连接到显示器。请确认：显示器已开机、与 Home Assistant 在同一网络、且无线 ADB 已开启（端口 5555）",
+      "unauthorized": "显示器拒绝或未响应调试授权。请重新连接，并在显示器画面上确认「允许调试」弹窗",
+      "key_error": "无法准备 ADB 密钥，请查看 Home Assistant 日志"
     },
     "abort": {
       "already_configured": "这台显示器已经添加过了",
