@@ -3,31 +3,33 @@
 通过无线 ADB 控制小米 / 红米显示器（Mimonitor Toolbox 的 Home Assistant 移植）。
 
 实测机型：**Redmi G Pro 27U 2026**（系统识别型号 `MiTV-MFFU1`，HyperOS 3.0.112.0）。
-原理与 [Mimonitor_Toolbox](https://github.com/) 一致：无线 ADB 连上显示器内置的 Android
-系统，用 `settings` 命令读写 Android Global Settings，背光等底层参数经
-`MtkDirectTool.jar` 直写 MTK 寄存器。
+参考 [Mimonitor_Toolbox](https://github.com/) 实现 
 
 > 小米显示器（如 Redmi G Pro 27U）本身带一个完整的 Android 系统，默认开启无线
 > ADB（端口 **5555**）。本集成就是连接这个 Android 系统来调显示器参数，与
 > Mimonitor Toolbox 桌面版走的是同一套命令。
 
-**不依赖外部 `adb` 命令**：集成用纯 Python 的
-[adb-shell](https://github.com/JeffLIrion/adb_shell) 在进程内实现 ADB 协议，
-直接 TCP 连接显示器的 5555 端口。所以 Home Assistant OS / 容器里**不需要**安装
-platform-tools，也不会出现 `No such file or directory: 'adb'` 这类问题
-（`adb-shell` 由 HA 依据 manifest 的 requirements 自动安装）。
-
-已在真机（`MiTV-MFFU1`）用真实 adb-shell 验证：背光 36→41→36、画面模式
-16→9→10→16、输入源 24(HDMI 2)→23(HDMI 1)→24 全部生效，且 jar 自动部署成功。
-
 ## 安装
 
-1. 把 `custom_components/mi_monitor` 整个目录复制到 Home Assistant 的
-   `config/custom_components/` 下。
-2. 重启 Home Assistant（HA 会自动安装 `adb-shell` 依赖）。
-3. 设置 → 设备与服务 → 添加集成 → 搜索 **Mi Monitor (ADB)**。
-4. 输入显示器的 IP 地址，向导会测试连接并显示设备型号。
-5. 想加第二台显示器，重复第 3~4 步即可（一台显示器 = 一个 IP = 一个配置条目）。
+### 方法 1：[HACS](https://hacs.xyz/)
+
+一键从 HACS 安装本集成：
+
+[![打开您的 Home Assistant 实例并打开 Home Assistant 社区商店内的 Mi Monitor 集成。](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Ha_Mi_Monitor&repository=Ha_Mi_Monitor&category=integration)
+
+或者，HACS > 在搜索框中输入 **Mi Monitor** > 点击 **Mi Monitor (ADB)**，进入集成详情页 > DOWNLOAD
+
+### 方法 2：手动复制
+
+把 `custom_components/mi_monitor` 整个目录复制到 Home Assistant 的
+`config/custom_components/` 下。
+
+### 安装后
+
+1. 重启 Home Assistant（会自动安装 `adb-shell` 依赖）。
+2. 设置 → 设备与服务 → 添加集成 → 搜索 **Mi Monitor (ADB)**。
+3. 输入显示器的 IP 地址，向导会测试连接并读取型号作为设备名称。
+4. 想加第二台显示器，重复第 2~3 步即可（一台显示器 = 一个 IP = 一个配置条目）。
 
 ### 前置条件
 
@@ -42,13 +44,6 @@ ADB 需要 RSA 密钥认证。集成的密钥策略：
    Toolbox 连接并授权过这台显示器，集成会复用那把密钥，**不需要重新授权**。
 2. 没有系统密钥时，在 HA 配置目录 `config/mi_monitor/adbkey` 自动生成一对，
    首次连接需在显示器画面上确认「允许调试」弹窗。
-
-### MtkDirectTool.jar
-
-背光 / 色温的**底层**寄存器写入走 `MtkDirectTool.jar`（已随集成附在
-`custom_components/mi_monitor/bin/`）。首次使用背光调节时会自动经 adb-shell
-的 push 推到显示器，再复制到应用私有目录。找不到 jar 时这些功能降级为仅写
-`settings`（参数仍会变化，只是不经 JNI）。
 
 ## 功能
 
@@ -121,17 +116,21 @@ adb shell am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tv
 ## 目录结构
 
 ```text
-custom_components/mi_monitor/
-├── __init__.py          # 集成入口 + 每台显示器一个 DataUpdateCoordinator
-├── config_flow.py       # 配置向导（按 IP 添加，支持多台；名称取型号）
-├── adb_client.py        # ADB 连接 / 命令封装 / jar 自动部署 / 设备信息读取
-├── number.py            # 背光 / 黑色级别 / 对比度 / 饱和度 / 色调 / 锐度
-├── select.py            # 画面模式 / 输入源
-├── sensor.py            # 型号 / 固件 / 分辨率 / 序列号 / 连接状态等信息
-├── const.py             # 常量
-├── strings.json         # 向导文案
-├── manifest.json
-└── bin/MtkDirectTool.jar
+Ha_Mi_Monitor/
+├── install.sh              # 安装脚本（./install.sh /config）
+├── hacs.json               # HACS 集成清单
+├── custom_components/mi_monitor/
+│   ├── __init__.py         # 集成入口 + 每台显示器一个 DataUpdateCoordinator
+│   ├── config_flow.py      # 配置向导（按 IP 添加，支持多台；名称取型号）
+│   ├── adb_client.py       # ADB 连接 / 命令封装 / jar 自动部署 / 设备信息读取
+│   ├── number.py           # 背光 / 黑色级别 / 对比度 / 饱和度 / 色调 / 锐度
+│   ├── select.py           # 画面模式 / 输入源
+│   ├── sensor.py           # 型号 / 固件 / 分辨率 / 序列号 / 连接状态等信息
+│   ├── const.py            # 常量
+│   ├── strings.json        # 向导文案
+│   ├── manifest.json
+│   └── bin/MtkDirectTool.jar
+└── tests/                  # 单元测试（python -m unittest discover -s tests）
 ```
 
 ## 后续路线（未实现）

@@ -1,0 +1,7 @@
+{
+  "name": "Xiaomi Monitor (ADB)",
+  "content_in_root": false,
+  "render_readme": true,
+  "homeassistant": "2024.2.0",
+  "zip_release": false
+}
