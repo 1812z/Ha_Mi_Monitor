@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "小米显示器（ADB）",
+        "description": "输入显示器的 IP 地址。显示器需已开启无线 ADB（端口 5555）。可以添加多台显示器。",
+        "data": {
+          "host": "显示器 IP 地址"
+        }
+      },
+      "reconfigure": {
+        "title": "重新配置显示器",
+        "description": "修改这台显示器的 IP 地址。",
+        "data": {
+          "host": "显示器 IP 地址"
+        }
+      }
+    },
+    "error": {
+      "no_host": "请输入 IP 地址",
+      "invalid_ip": "IP 地址格式不正确",
+      "cannot_connect": "无法连接到显示器，请确认无线 ADB 已开启、IP 正确且与显示器在同一网络",
+      "unauthorized": "ADB 连接未授权，请在显示器上确认授权弹窗"
+    },
+    "abort": {
+      "already_configured": "这台显示器已经添加过了",
+      "reconfigure_failed": "重新配置失败，请重试"
+    }
+  }
+}

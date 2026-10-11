@@ -1,0 +1,13 @@
+{
+  "domain": "mi_monitor",
+  "name": "Mi Monitor (ADB)",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Ha_Mi_Monitor",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Ha_Mi_Monitor/issues",
+  "requirements": [],
+  "version": "1.0.0",
+  "integration_type": "device"
+}
