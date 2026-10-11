@@ -50,6 +50,77 @@ MTK_JAR_NAME = "MtkDirectTool.jar"
 MTK_JAR_SDCARD = f"/sdcard/{MTK_JAR_NAME}"
 MTK_JAR_CACHE = f"/data/data/mitv.service/cache/{MTK_JAR_NAME}"
 
+#: 一次 shell 批量读取的设备信息属性（key 为内部字段名）
+#: 复刻 Mimonitor_Toolbox 的 ``getprop ro.product.model`` 做法，并补齐型号/固件/
+#: 分辨率等能显示在 HA「设备信息」里的基础信息。
+DEVICE_PROPERTIES: dict[str, str] = {
+    "model": "ro.product.model",                          # MiTV-MFFU1
+    "brand": "ro.product.brand",                          # xiaomi
+    "manufacturer": "ro.product.manufacturer",            # xiaomi
+    "market_name": "ro.product.marketname",               # 部分机型有中文市场名
+    "product": "ro.product.device",                       # beekeeper
+    "android_version": "ro.build.version.release",        # 14
+    "firmware": "ro.build.display.id",                    # OS3.0.109.0.UFFMAMN
+    "fingerprint": "ro.build.fingerprint",
+    "serial": "ro.serialno",
+    "panel_type": "ro.boot.panel_type",                   # lcd / oled
+    "display_size": "vendor.display-size",                # 3840x2160
+    "density": "ro.sf.lcd_density",                       # 320
+    "device_unique": "ro.product.unique",                 # xiaomi+MTK9655+beekeeper+...
+    "characteristics": "ro.build.characteristics",        # tv
+    "cpu_abi": "ro.product.cpu.abi",
+}
+
+#: 读设备信息时一次性执行的命令（每条 getprop 输出一行）
+_PROP_READ_COMMAND = "; ".join(
+    f"getprop {prop}" for prop in DEVICE_PROPERTIES.values()
+)
+
+
+def parse_prop_output(output: str) -> dict[str, str]:
+    """把 ``_PROP_READ_COMMAND`` 的多行输出按字段名解析成 dict。
+
+    行与 ``DEVICE_PROPERTIES`` 的顺序一一对应；空白值会被丢弃（不同机型
+    并非所有属性都存在，例如 marketname 在 Redmi G Pro 27U 上就是空的）。
+    """
+    fields = list(DEVICE_PROPERTIES)
+    lines = [line.strip() for line in (output or "").splitlines()]
+    result: dict[str, str] = {}
+    for index, field in enumerate(fields):
+        if index >= len(lines):
+            break
+        value = lines[index]
+        if value and value.lower() not in ("null", "unknown"):
+            result[field] = value
+    return result
+
+
+def derive_display_name(info: dict[str, str]) -> str:
+    """从设备信息里推一个人类可读的显示器名称。
+
+    优先中文市场名，其次型号；型号只取 ``MiTV-`` / ``-`` 之后更有辨识度的部分
+    （``MiTV-MFFU1`` -> ``MFFU1`` 太短，所以保留完整型号更稳妥）。
+    """
+    market = (info.get("market_name") or "").strip()
+    if market:
+        return market
+    model = (info.get("model") or "").strip()
+    if model:
+        return model
+    product = (info.get("product") or "").strip()
+    return product or ""
+
+
+def derive_chipset(info: dict[str, str]) -> str:
+    """从 ``ro.product.unique`` 里抽出芯片平台（``xiaomi+MTK9655+...``）。"""
+    unique = (info.get("device_unique") or "").strip()
+    parts = [part for part in unique.split("+") if part]
+    for part in parts:
+        upper = part.upper()
+        if upper.startswith(("MTK", "MT", "SM", "SDM", "RK", "AMLOGIC")):
+            return part
+    return ""
+
 
 def _tvservice_quote(parts: list[str]) -> str:
     """把一段命令组装成 TvService 可执行的 ``sh -c eval`` 形式。
@@ -413,16 +484,29 @@ class AdbClient:
     async def get_model(self) -> str:
         return await self._call(self._shell_sync, "getprop ro.product.model")
 
+    async def get_device_info(self) -> dict[str, str]:
+        """一次 shell 读完所有设备属性（比逐条 getprop 快得多）。"""
+        raw = await self._call(self._shell_sync, _PROP_READ_COMMAND)
+        info = parse_prop_output(raw)
+        chipset = derive_chipset(info)
+        if chipset:
+            info["chipset"] = chipset
+        display_name = derive_display_name(info)
+        if display_name:
+            info["display_name"] = display_name
+        return info
+
     async def ping(self) -> dict[str, object]:
-        """连接向导用：验证 ip 是显示器并取回型号。"""
+        """连接向导用：验证 ip 是显示器并取回型号与基础信息。"""
         ok, state = await self.connect()
         if not ok:
-            return {"ok": False, "state": state, "model": None}
+            return {"ok": False, "state": state, "model": None, "info": {}}
         try:
-            model = (await self.get_model()).strip()
+            info = await self.get_device_info()
         except AdbError as exc:
-            return {"ok": False, "state": f"error: {exc}", "model": None}
-        return {"ok": True, "state": "device", "model": model or "unknown"}
+            return {"ok": False, "state": f"error: {exc}", "model": None, "info": {}}
+        model = info.get("model") or info.get("display_name") or "unknown"
+        return {"ok": True, "state": "device", "model": model, "info": info}
 
     # ---- settings 读写 ----------------------------------------------
     async def get(self, key: str) -> str:

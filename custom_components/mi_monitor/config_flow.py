@@ -31,7 +31,7 @@ def _valid_ipv4(host: str) -> bool:
 
 
 async def _probe(hass: HomeAssistant, host: str) -> dict[str, object]:
-    """尝试连接并取回型号，供向导显示。
+    """尝试连接并取回型号与基础信息，供向导显示。
 
     密钥解析（可能生成 RSA 密钥对）和 ADB 通信都是阻塞操作，全部在线程池里跑，
     不会卡住 Home Assistant 事件循环。
@@ -40,14 +40,14 @@ async def _probe(hass: HomeAssistant, host: str) -> dict[str, object]:
         key_path = await asyncio.to_thread(resolve_adb_key, hass)
     except Exception as exc:  # noqa: BLE001 - 密钥失败也要给用户可读信息
         _LOGGER.warning("准备 ADB 密钥失败: %s", exc)
-        return {"ok": False, "state": f"keyerror: {exc}", "model": None}
+        return {"ok": False, "state": f"keyerror: {exc}", "model": None, "info": {}}
 
     client = AdbClient(host, key_path=key_path)
     try:
         return await client.ping()
     except Exception as exc:  # noqa: BLE001 - 向导里任何异常都要转成可读信息
         _LOGGER.warning("探测 %s 失败: %s", host, exc)
-        return {"ok": False, "state": f"error: {exc}", "model": None}
+        return {"ok": False, "state": f"error: {exc}", "model": None, "info": {}}
 
 
 def _error_for(result: dict[str, object]) -> str:
@@ -58,6 +58,18 @@ def _error_for(result: dict[str, object]) -> str:
     if state.startswith("keyerror"):
         return "key_error"
     return "cannot_connect"
+
+
+def _entry_title(info: dict[str, str], host: str) -> str:
+    """配置条目名称：优先用显示器型号，取不到才退回 IP。"""
+    model = (info.get("market_name") or "").strip() or (info.get("model") or "").strip()
+    display = (info.get("display_name") or "").strip()
+    # 型号比推导名更可信；两者都缺才用 IP
+    name = model or display
+    if name:
+        # 同名多台时补 IP 便于区分
+        return name
+    return f"Mi Monitor {host}"
 
 
 class MiMonitorConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -83,11 +95,16 @@ class MiMonitorConfigFlow(ConfigFlow, domain=DOMAIN):
                 if not result.get("ok"):
                     errors["base"] = _error_for(result)
                 else:
+                    info = result.get("info") or {}
                     model = result.get("model") or "unknown"
                     return self.async_create_entry(
-                        title=f"Mi Monitor {host}",
-                        data={CONF_HOST: host},
-                        description_placeholders={"model": model},
+                        # 名称用显示器型号（参考 Mimonitor 读 ro.product.model 的做法）
+                        title=_entry_title(info, host),
+                        data={CONF_HOST: host, CONF_INFO: info},
+                        description_placeholders={
+                            "model": model,
+                            "firmware": info.get("firmware") or "-",
+                        },
                     )
 
         return self.async_show_form(

@@ -52,7 +52,7 @@ class MiMonitorNumber(CoordinatorEntity[MiMonitorCoordinator], NumberEntity):
     ) -> None:
         super().__init__(coordinator)
         self._settings_key = settings_key
-        self._attr_name = f"{coordinator.client.ip} {label}"
+        self._attr_name = f"{coordinator.display_name} {label}"
         self._attr_unique_id = f"{entry.entry_id}_{settings_key}"
         self._attr_has_entity_name = False
         self._attr_min_value = min_value

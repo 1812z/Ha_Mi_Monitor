@@ -52,20 +52,47 @@ ADB 需要 RSA 密钥认证。集成的密钥策略：
 
 ## 功能
 
-当前实现**基础显示参数控制 + 输入切换**（高级功能后续再加）：
+### 设备识别与命名
+
+添加时（以及每次启动刷新）会读取设备信息，**配置条目和实体名称用显示器型号，
+而不是 IP**（参考 Mimonitor Toolbox 读 `getprop ro.product.model` 识别机型的做法，
+并补齐了固件、分辨率等信息）：
+
+- 条目名 / 设备名：`MiTV-MFFU1`（有中文市场名时优先用它）
+- 实体名：`MiTV-MFFU1 背光`、`MiTV-MFFU1 输入源` …
+- 老版本添加的条目（名称为 `Mi Monitor <ip>`）会在下次启动时自动升级为型号；
+  你手动改过名字则保持不动。
+
+HA 设备页的「信息」列会显示：
+
+| 项 | 来源 | 实测值（Redmi G Pro 27U） |
+| --- | --- | --- |
+| 名称 / 型号 | `ro.product.model` | `MiTV-MFFU1` |
+| 制造商 | `ro.product.manufacturer` | Xiaomi |
+| 固件版本 | `ro.build.display.id` | `OS3.0.109.0.UFFMAMN` |
+| 硬件版本 | `ro.build.version.release` | Android 14 |
+| 序列号 | `ro.serialno` | `63895171690000351` |
+| 连接地址 | — | `http://<ip>` |
+
+同时提供一组**信息传感器**实体（诊断类）：型号、固件版本、Android 版本、
+面板分辨率（`vendor.display-size` → 3840x2160）、面板类型（`ro.boot.panel_type`
+→ lcd）、芯片平台（从 `ro.product.unique` 解析 → MTK9655）、序列号、IP 地址、
+连接状态，以及可读的「当前画面模式」「当前输入源」。
+
+### 控制实体
 
 | 实体 | 类型 | 说明 |
 | --- | --- | --- |
-| `number.<ip>_背光` | Number | 1–100（`picture_backlight` + JNI `g_disp__disp_back_light`） |
-| `number.<ip>_黑色级别` | Number | 0–100（`picture_brightness`） |
-| `number.<ip>_对比度` | Number | 0–100（`picture_contrast`） |
-| `number.<ip>_饱和度` | Number | 0–100（`picture_saturation`） |
-| `number.<ip>_色调` | Number | 0–100（`picture_hue`） |
-| `number.<ip>_锐度` | Number | 0–100（`picture_sharpness`） |
-| `select.<ip>_画面模式` | Select | 标准 / 游戏 / 电影（`picture_mode` 14/10/9） |
-| `select.<ip>_输入源` | Select | HDMI 1 / HDMI 2 / DP / USB-C |
+| `number.<型号>_背光` | Number | 1–100（`picture_backlight` + JNI `g_disp__disp_back_light`） |
+| `number.<型号>_黑色级别` | Number | 0–100（`picture_brightness`） |
+| `number.<型号>_对比度` | Number | 0–100（`picture_contrast`） |
+| `number.<型号>_饱和度` | Number | 0–100（`picture_saturation`） |
+| `number.<型号>_色调` | Number | 0–100（`picture_hue`） |
+| `number.<型号>_锐度` | Number | 0–100（`picture_sharpness`） |
+| `select.<型号>_画面模式` | Select | 标准 / 游戏 / 电影（`picture_mode` 14/10/9） |
+| `select.<型号>_输入源` | Select | HDMI 1 / HDMI 2 / DP / USB-C |
 
-多台显示器时实体名带各自 IP，互不干扰。设备处于其他模式（如 HDR 图片 16）时，
+多台显示器时实体名带各自型号，互不干扰。设备处于其他模式（如 HDR 图片 16）时，
 画面模式 select 显示为未选，属正常行为（与 Mimonitor Toolbox 桌面版一致）。
 
 ## 底层命令
@@ -96,10 +123,11 @@ adb shell am start -a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tv
 ```text
 custom_components/mi_monitor/
 ├── __init__.py          # 集成入口 + 每台显示器一个 DataUpdateCoordinator
-├── config_flow.py       # 配置向导（按 IP 添加，支持多台）
-├── adb_client.py        # ADB 连接 / 命令封装 / jar 自动部署
+├── config_flow.py       # 配置向导（按 IP 添加，支持多台；名称取型号）
+├── adb_client.py        # ADB 连接 / 命令封装 / jar 自动部署 / 设备信息读取
 ├── number.py            # 背光 / 黑色级别 / 对比度 / 饱和度 / 色调 / 锐度
 ├── select.py            # 画面模式 / 输入源
+├── sensor.py            # 型号 / 固件 / 分辨率 / 序列号 / 连接状态等信息
 ├── const.py             # 常量
 ├── strings.json         # 向导文案
 ├── manifest.json

@@ -53,7 +53,7 @@ class MiMonitorPictureModeSelect(CoordinatorEntity[MiMonitorCoordinator], Select
 
     def __init__(self, coordinator: MiMonitorCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_name = f"{coordinator.client.ip} 画面模式"
+        self._attr_name = f"{coordinator.display_name} 画面模式"
         self._attr_unique_id = f"{entry.entry_id}_picture_mode"
         self._attr_device_info = coordinator.device_info
 
@@ -78,7 +78,7 @@ class MiMonitorInputSourceSelect(CoordinatorEntity[MiMonitorCoordinator], Select
 
     def __init__(self, coordinator: MiMonitorCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_name = f"{coordinator.client.ip} 输入源"
+        self._attr_name = f"{coordinator.display_name} 输入源"
         self._attr_unique_id = f"{entry.entry_id}_input_source"
         self._attr_device_info = coordinator.device_info
 

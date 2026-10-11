@@ -83,8 +83,86 @@ class TestCommandConstruction(unittest.TestCase):
 
     def test_available_is_property_not_method(self):
         """回归测试：真实 adb-shell 的 available 是 property，调用会 TypeError。"""
-        source = open(adb_client.__file__, encoding="utf-8").read()
+        with open(adb_client.__file__, encoding="utf-8") as handle:
+            source = handle.read()
         self.assertNotIn(".available()", source)
+
+
+REAL_DEVICE_OUTPUT = "\n".join([
+    "MiTV-MFFU1",                    # model
+    "xiaomi",                        # brand
+    "xiaomi",                        # manufacturer
+    "",                              # market_name（该机型为空）
+    "beekeeper",                     # product
+    "14",                            # android_version
+    "OS3.0.109.0.UFFMAMN",           # firmware
+    "xiaomi/beekeeper/beekeeper:14/x",  # fingerprint
+    "63895171690000351",             # serial
+    "lcd",                           # panel_type
+    "3840x2160",                     # display_size
+    "320",                           # density
+    "xiaomi+MTK9655+beekeeper+OM2+1380lcd27",  # device_unique
+    "tv",                            # characteristics
+    "arm64-v8a",                     # cpu_abi
+])
+
+
+class TestDeviceInfoParsing(unittest.TestCase):
+    """设备信息解析（真机输出样本）。"""
+
+    def test_parse_real_output(self):
+        info = adb_client.parse_prop_output(REAL_DEVICE_OUTPUT)
+        self.assertEqual(info["model"], "MiTV-MFFU1")
+        self.assertEqual(info["manufacturer"], "xiaomi")
+        self.assertEqual(info["firmware"], "OS3.0.109.0.UFFMAMN")
+        self.assertEqual(info["display_size"], "3840x2160")
+        self.assertEqual(info["panel_type"], "lcd")
+        self.assertEqual(info["serial"], "63895171690000351")
+        # 空属性应被丢弃，而不是留下空串
+        self.assertNotIn("market_name", info)
+
+    def test_chipset_from_unique(self):
+        info = adb_client.parse_prop_output(REAL_DEVICE_OUTPUT)
+        self.assertEqual(adb_client.derive_chipset(info), "MTK9655")
+
+    def test_chipset_empty_when_unknown(self):
+        self.assertEqual(adb_client.derive_chipset({}), "")
+        self.assertEqual(
+            adb_client.derive_chipset({"device_unique": "xiaomi+beekeeper+OM2"}),
+            "",
+        )
+
+    def test_display_name_prefers_market_name(self):
+        self.assertEqual(
+            adb_client.derive_display_name({"market_name": "红米 G Pro 27U"}),
+            "红米 G Pro 27U",
+        )
+
+    def test_display_name_falls_back_to_model(self):
+        info = adb_client.parse_prop_output(REAL_DEVICE_OUTPUT)
+        self.assertEqual(adb_client.derive_display_name(info), "MiTV-MFFU1")
+
+    def test_display_name_falls_back_to_product(self):
+        self.assertEqual(
+            adb_client.derive_display_name({"product": "beekeeper"}), "beekeeper"
+        )
+
+    def test_display_name_empty_when_nothing(self):
+        self.assertEqual(adb_client.derive_display_name({}), "")
+
+    def test_parse_handles_short_output(self):
+        """设备只回了部分行时不能崩，也不能错位。"""
+        info = adb_client.parse_prop_output("MiTV-MFFU1\nxiaomi\n")
+        self.assertEqual(info["model"], "MiTV-MFFU1")
+        self.assertEqual(info["brand"], "xiaomi")
+        self.assertNotIn("firmware", info)
+
+    def test_parse_drops_null_and_unknown(self):
+        out = "null\nunknown\nxiaomi\n"
+        info = adb_client.parse_prop_output(out)
+        self.assertNotIn("model", info)
+        self.assertNotIn("brand", info)
+        self.assertEqual(info["manufacturer"], "xiaomi")
 
 
 class TestRuntimeBehaviour(unittest.IsolatedAsyncioTestCase):
@@ -215,6 +293,31 @@ class TestRuntimeBehaviour(unittest.IsolatedAsyncioTestCase):
             client.get("picture_hue"),
         )
         self.assertEqual(recorded["connect"], 1)
+
+    async def test_get_device_info_single_shell_call(self):
+        """设备信息应一次 shell 读完（而不是逐条 getprop）。"""
+        behaviour["device_output"] = {"getprop": REAL_DEVICE_OUTPUT}
+        client = self._client()
+        info = await client.get_device_info()
+        self.assertEqual(info["model"], "MiTV-MFFU1")
+        self.assertEqual(info["chipset"], "MTK9655")
+        self.assertEqual(info["display_name"], "MiTV-MFFU1")
+        self.assertEqual(len(recorded["shell"]), 1)
+
+    async def test_ping_returns_info(self):
+        behaviour["device_output"] = {"getprop": REAL_DEVICE_OUTPUT}
+        client = self._client()
+        result = await client.ping()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "MiTV-MFFU1")
+        self.assertEqual(result["info"]["firmware"], "OS3.0.109.0.UFFMAMN")
+
+    async def test_ping_failure_has_empty_info(self):
+        behaviour["connect_error"] = exceptions_mod.TcpTimeoutException("nope")
+        client = self._client()
+        result = await client.ping()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["info"], {})
 
 
 if __name__ == "__main__":
